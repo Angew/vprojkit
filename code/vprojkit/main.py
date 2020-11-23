@@ -6,9 +6,21 @@ This file is covered by the MIT license, see accompanying LICENSE file.
 
 
 import argparse
+import enum
 import os.path
 import re
 import sys
+import xml.etree.ElementTree as ET
+
+
+class TargetType(enum.Enum):
+    EXECUTABLE = enum.auto()
+    STATIC_LIBRARY = enum.auto()
+    SHARED_LIBRARY = enum.auto()
+
+
+class Target:
+    pass
 
 
 class Program:
@@ -21,9 +33,13 @@ class Program:
         """,
         re.VERBOSE
     )
-    
+
     def __init__(self, inputs):
         self.inputs = inputs
+        self.node_conditions = {
+            None,
+            "'$(Configuration)|$(Platform)'=='Release|x64'"
+        }
 
     @classmethod
     def from_options(cls, options):
@@ -55,10 +71,39 @@ class Program:
                     yield os.path.join(sln_dir, match.group("project_path"))
 
     def read_file(self, path):
-        print(path)
+        xml = ET.parse(path)
+        root = xml.getroot()
+        self.process_project(root)
 
     def write_output(self):
         pass
+
+    def process_project(self, root):
+        target = Target()
+        for node in (child for child in root if self.node_applies(child)):
+            if node.tag == "PropertyGroup":
+                label = node.get("Label")
+                if label == "Globals":
+                    target.name = node.find("ProjectName").text
+                elif label == "Configuration":
+                    target.type = self.target_type_from_xml(node.find("ConfigurationType").text)
+            elif node.tag == "ItemDefinitionGroup":
+                cl = node.find("ClCompile")
+                target.include_directories = self.parse_list(cl.find("AdditionalIncludeDirectories").text)
+
+    def node_applies(self, node):
+        return node.get("Condition") in self.node_conditions
+
+    _target_type_from_xml_mapping = {
+        "DynamicLibrary": TargetType.SHARED_LIBRARY
+    }
+    @classmethod
+    def target_type_from_xml(cls, type):
+        return cls._target_type_from_xml_mapping[type]
+
+    @staticmethod
+    def parse_list(text):
+        return text.split(";")
 
 
 def create_argument_parser(prog=None):
