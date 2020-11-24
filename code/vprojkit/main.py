@@ -20,19 +20,16 @@ class TargetType(enum.Enum):
 
 
 class Target:
-    pass
+    def __init__(self):
+        self.name = None
+        self.type = None
+        self.include_directories = []
 
 
 class Program:
-    re_sln_project_line = re.compile(
-        r"""
-            ^
-            Project\("\{[-0-9A-F]*\}"\) \s = \s
-            "[^"]*" , \s
-            "(?P<project_path> [^"]* \.vcxproj)"
-        """,
-        re.VERBOSE
-    )
+    """
+    One run of the processing program.
+    """
 
     def __init__(self, inputs):
         self.inputs = inputs
@@ -40,6 +37,7 @@ class Program:
             None,
             "'$(Configuration)|$(Platform)'=='Release|x64'"
         }
+        self.targets = []
 
     @classmethod
     def from_options(cls, options):
@@ -61,12 +59,21 @@ class Program:
             else:
                 raise ValueError(f"Unsupported file type of {path}")
 
+    _re_sln_project_line = re.compile(
+        r"""
+            ^
+            Project\("\{[-0-9A-F]*\}"\) \s = \s
+            "[^"]*" , \s
+            "(?P<project_path> [^"]* \.vcxproj)"
+        """,
+        re.VERBOSE
+    )
     @classmethod
     def gather_projects_from_sln(cls, sln_path):
         sln_dir = os.path.dirname(sln_path)
         with open(sln_path) as sln:
             for line in sln:
-                match = cls.re_sln_project_line.match(line)
+                match = cls._re_sln_project_line.match(line)
                 if (match):
                     yield os.path.join(sln_dir, match.group("project_path"))
 
@@ -76,23 +83,48 @@ class Program:
         self.process_project(root)
 
     def write_output(self):
-        pass
+        out = sys.stdout
+        for target in self.targets:
+            if target.type == TargetType.EXECUTABLE:
+                out.write(f"add_executable({target.name}")
+            elif target.type == TargetType.SHARED_LIBRARY:
+                out.write(f"add_library({target.name} SHARED")
+            elif target.type == TargetType.STATIC_LIBRARY:
+                out.write(f"add_library({target.name} STATIC")
+            out.write(")\n")
+            if target.include_directories:
+                out.write(f"target_include_directories({target.name} PRIVATE\n  ")
+                out.write("\n  ".join(target.include_directories))
+                out.write("\n)\n")
 
+    _re_project_xmlns = re.compile(r"(\{[^}]*\})Project")
     def process_project(self, root):
-        target = Target()
+        self.start_new_target()
+        ns = self._re_project_xmlns.match(root.tag)[1]
         for node in (child for child in root if self.node_applies(child)):
-            if node.tag == "PropertyGroup":
+            if node.tag == f"{ns}PropertyGroup":
                 label = node.get("Label")
                 if label == "Globals":
-                    target.name = node.find("ProjectName").text
+                    self.current_target.name = node.find(f"{ns}ProjectName").text
                 elif label == "Configuration":
-                    target.type = self.target_type_from_xml(node.find("ConfigurationType").text)
-            elif node.tag == "ItemDefinitionGroup":
-                cl = node.find("ClCompile")
-                target.include_directories = self.parse_list(cl.find("AdditionalIncludeDirectories").text)
+                    self.current_target.type = self.target_type_from_xml(node.find(f"{ns}ConfigurationType").text)
+            elif node.tag == f"{ns}ItemDefinitionGroup":
+                cl = node.find(f"{ns}ClCompile")
+                self.current_target.include_directories = [
+                    self.expand_macros(d) for d in 
+                    self.parse_list(cl.find(f"{ns}AdditionalIncludeDirectories").text)
+                    if not d.startswith("%(")
+                ]
 
     def node_applies(self, node):
         return node.get("Condition") in self.node_conditions
+        
+    def start_new_target(self):
+        self.targets.append(Target())
+        
+    @property
+    def current_target(self):
+        return self.targets[-1]
 
     _target_type_from_xml_mapping = {
         "DynamicLibrary": TargetType.SHARED_LIBRARY
@@ -104,6 +136,17 @@ class Program:
     @staticmethod
     def parse_list(text):
         return text.split(";")
+        
+    _re_vs_macro = re.compile(r"\$ \( ( [^)]* ) \)", re.VERBOSE)
+    def expand_macros(self, text):
+        return re.sub(
+            self._re_vs_macro,
+            lambda m: self.expand_macro(m[1]),
+            text
+        )
+        
+    def expand_macro(self, macro):
+        return f"$({macro})" #no-op for now, will be fallback anyway
 
 
 def create_argument_parser(prog=None):
@@ -125,10 +168,14 @@ def create_argument_parser(prog=None):
     return parser
 
 
+def run(options):
+    return Program.from_options(options).run()
+
+
 def main(args, prog=None):
     parser = create_argument_parser(prog)
     options = parser.parse_args(args)
-    return Program.from_options(options).run()
+    return run(options)
 
 
 if __name__ == "__main__":
