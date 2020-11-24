@@ -6,6 +6,7 @@ This file is covered by the MIT license, see accompanying LICENSE file.
 
 
 import argparse
+from collections import namedtuple
 import enum
 import os.path
 import re
@@ -29,14 +30,24 @@ class Target:
         self.name = None
         self.type = None
         self.include_directories = []
+        self.compile_definitions = []
+
         mpath = lambda p: p+"\\" if p else p
         self.vs_macros = {
             "ProjectDir": mpath(os.path.dirname(project_path)),
             "SolutionDir": mpath(sln_dir),
         }
+        
+        self.unexpected = []
 
     def get_macro_expansion(self, macro):
         return self.vs_macros.get(macro)
+        
+    def add_unexpected(self, expectation, actual_text):
+        self.unexpected.append((expectation, actual_text))
+        
+        
+Expectation = namedtuple("Expectation", "tag, text")
 
 
 class Program:
@@ -54,6 +65,11 @@ class Program:
             "'$(Configuration)|$(Platform)'=='Release|x64'"
         }
         self.targets = []
+        self.cl_expectations = [
+            Expectation("Optimization", "MaxSpeed"),
+            Expectation("RuntimeLibrary", "MultiThreadedDLL"),
+            Expectation("PrecompiledHeader", ""),
+        ]
 
     @classmethod
     def from_options(cls, options):
@@ -118,6 +134,13 @@ class Program:
                 out.write(f"target_include_directories({target.name} PRIVATE\n  ")
                 out.write("\n  ".join(map(self.to_cmake_path, target.include_directories)))
                 out.write("\n)\n")
+            if target.compile_definitions:
+                out.write(f"target_compile_definitions({target.name} PRIVATE\n  ")
+                out.write("\n  ".join(target.compile_definitions))
+                out.write("\n)\n")
+            for ex in target.unexpected:
+                out.write(f"# {target.name}: expected <{ex[0].tag}> of '{ex[0].text}' was actually '{ex[1]}'\n")
+                
 
     _re_project_xmlns = re.compile(r"(\{[^}]*\})Project")
     def process_project(self, root, path_info):
@@ -132,11 +155,16 @@ class Program:
                     self.current_target.type = self.target_type_from_xml(node.find(f"{ns}ConfigurationType").text)
             elif node.tag == f"{ns}ItemDefinitionGroup":
                 cl = node.find(f"{ns}ClCompile")
-                self.current_target.include_directories = [
-                    self.expand_macros(d) for d in
-                    self.parse_list(cl.find(f"{ns}AdditionalIncludeDirectories").text)
-                    if not d.startswith("%(")
-                ]
+                self.current_target.include_directories = self.process_list(
+                    cl.find(f"{ns}AdditionalIncludeDirectories")
+                )
+                self.current_target.compile_definitions = self.process_list(
+                    cl.find(f"{ns}PreprocessorDefinitions")
+                )
+                for ex in self.cl_expectations:
+                    text = cl.find(f"{ns}{ex.tag}").text.strip()
+                    if text != ex.text:
+                        self.current_target.add_unexpected(ex, text)
 
     def node_applies(self, node):
         return node.get("Condition") in self.node_conditions
@@ -148,6 +176,13 @@ class Program:
     def current_target(self):
         return self.targets[-1]
 
+    def process_list(self, node):
+        return [
+            self.expand_macros(d)
+            for d in self.parse_list(node.text.strip())
+            if not d.startswith("%(")
+        ]
+
     _target_type_from_xml_mapping = {
         "DynamicLibrary": TargetType.SHARED_LIBRARY
     }
@@ -158,7 +193,7 @@ class Program:
     @staticmethod
     def parse_list(text):
         return text.split(";")
-        
+
     @staticmethod
     def to_cmake_path(path):
         return path.replace("\\", "/")
