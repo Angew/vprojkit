@@ -37,16 +37,16 @@ class Target:
             "ProjectDir": mpath(os.path.dirname(project_path)),
             "SolutionDir": mpath(sln_dir),
         }
-        
+
         self.unexpected = []
 
     def get_macro_expansion(self, macro):
         return self.vs_macros.get(macro)
-        
+
     def add_unexpected(self, expectation, actual_text):
         self.unexpected.append((expectation, actual_text))
-        
-        
+
+
 Expectation = namedtuple("Expectation", "tag, text")
 
 
@@ -69,6 +69,11 @@ class Program:
             Expectation("Optimization", "MaxSpeed"),
             Expectation("RuntimeLibrary", "MultiThreadedDLL"),
             Expectation("PrecompiledHeader", ""),
+        ]
+        self.link_expectations = [
+            Expectation("OutputFile", "$(OutDir)$(ProjectName)$(RADF_BUILD_VER).dll"),
+            Expectation("ImportLibrary", r"$(SolutionDir)lib\$(RADF_ARCH_RELEASE)\$(ProjectName)$(RADF_BUILD_VER).lib"),
+            Expectation("TargetMachine", "MachineX64"),
         ]
 
     @classmethod
@@ -140,7 +145,7 @@ class Program:
                 out.write("\n)\n")
             for ex in target.unexpected:
                 out.write(f"# {target.name}: expected <{ex[0].tag}> of '{ex[0].text}' was actually '{ex[1]}'\n")
-                
+
 
     _re_project_xmlns = re.compile(r"(\{[^}]*\})Project")
     def process_project(self, root, path_info):
@@ -161,10 +166,12 @@ class Program:
                 self.current_target.compile_definitions = self.process_list(
                     cl.find(f"{ns}PreprocessorDefinitions")
                 )
-                for ex in self.cl_expectations:
-                    text = cl.find(f"{ns}{ex.tag}").text.strip()
-                    if text != ex.text:
-                        self.current_target.add_unexpected(ex, text)
+                self.check_expectations(cl, self.cl_expectations, ns)
+                if self.current_target.type != TargetType.STATIC_LIBRARY:
+                    link = node.find(f"{ns}Link")
+                    # ...
+                    self.check_expectations(link, self.link_expectations, ns)
+
 
     def node_applies(self, node):
         return node.get("Condition") in self.node_conditions
@@ -182,6 +189,12 @@ class Program:
             for d in self.parse_list(node.text.strip())
             if not d.startswith("%(")
         ]
+
+    def check_expectations(self, node, expectations, ns):
+        for ex in expectations:
+            text = node.find(f"{ns}{ex.tag}").text.strip()
+            if text != ex.text:
+                self.current_target.add_unexpected(ex, text)
 
     _target_type_from_xml_mapping = {
         "DynamicLibrary": TargetType.SHARED_LIBRARY
