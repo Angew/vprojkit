@@ -13,6 +13,11 @@ import sys
 import xml.etree.ElementTree as ET
 
 
+def printed(arg, *args):
+    print(arg, *args)
+    return arg
+
+
 class TargetType(enum.Enum):
     EXECUTABLE = enum.auto()
     STATIC_LIBRARY = enum.auto()
@@ -20,10 +25,18 @@ class TargetType(enum.Enum):
 
 
 class Target:
-    def __init__(self):
+    def __init__(self, project_path, sln_dir=None):
         self.name = None
         self.type = None
         self.include_directories = []
+        mpath = lambda p: p+"\\" if p else p
+        self.vs_macros = {
+            "ProjectDir": mpath(os.path.dirname(project_path)),
+            "SolutionDir": mpath(sln_dir),
+        }
+
+    def get_macro_expansion(self, macro):
+        return self.vs_macros.get(macro)
 
 
 class Program:
@@ -45,17 +58,20 @@ class Program:
 
     def run(self):
         inputs = self.gather_input_files()
-        for input_path in inputs:
-            self.read_file(input_path)
+        for input_project in inputs:
+            self.read_project(input_project)
         self.write_output()
 
     def gather_input_files(self):
-        for path in self.inputs:
+        for path in (os.path.abspath(p) for p in self.inputs):
             ext = os.path.splitext(path)[1]
             if ext == ".vcxproj":
-                yield path
+                yield path, None
             elif ext == ".sln":
-                yield from self.gather_projects_from_sln(path)
+                yield from (
+                    (p, os.path.dirname(path))
+                    for p in self.gather_projects_from_sln(path)
+                )
             else:
                 raise ValueError(f"Unsupported file type of {path}")
 
@@ -77,16 +93,16 @@ class Program:
                 if (match):
                     yield os.path.join(sln_dir, match.group("project_path"))
 
-    def read_file(self, path):
-        xml = ET.parse(path)
+    def read_project(self, project):
+        xml = ET.parse(project[0])
         root = xml.getroot()
-        self.process_project(root)
+        self.process_project(root, project)
 
     def write_output(self):
         out = sys.stdout
         for target in self.targets:
             if target.type == TargetType.EXECUTABLE:
-                out.write(f"add_executable({target.name}")
+                out.write(f"\nadd_executable({target.name}")
             elif target.type == TargetType.SHARED_LIBRARY:
                 out.write(f"add_library({target.name} SHARED")
             elif target.type == TargetType.STATIC_LIBRARY:
@@ -94,12 +110,12 @@ class Program:
             out.write(")\n")
             if target.include_directories:
                 out.write(f"target_include_directories({target.name} PRIVATE\n  ")
-                out.write("\n  ".join(target.include_directories))
+                out.write("\n  ".join(map(self.to_cmake_path, target.include_directories)))
                 out.write("\n)\n")
 
     _re_project_xmlns = re.compile(r"(\{[^}]*\})Project")
-    def process_project(self, root):
-        self.start_new_target()
+    def process_project(self, root, path_info):
+        self.start_new_target(path_info)
         ns = self._re_project_xmlns.match(root.tag)[1]
         for node in (child for child in root if self.node_applies(child)):
             if node.tag == f"{ns}PropertyGroup":
@@ -111,17 +127,17 @@ class Program:
             elif node.tag == f"{ns}ItemDefinitionGroup":
                 cl = node.find(f"{ns}ClCompile")
                 self.current_target.include_directories = [
-                    self.expand_macros(d) for d in 
+                    self.expand_macros(d) for d in
                     self.parse_list(cl.find(f"{ns}AdditionalIncludeDirectories").text)
                     if not d.startswith("%(")
                 ]
 
     def node_applies(self, node):
         return node.get("Condition") in self.node_conditions
-        
-    def start_new_target(self):
-        self.targets.append(Target())
-        
+
+    def start_new_target(self, path_info):
+        self.targets.append(Target(path_info[0], sln_dir=path_info[1]))
+
     @property
     def current_target(self):
         return self.targets[-1]
@@ -137,6 +153,10 @@ class Program:
     def parse_list(text):
         return text.split(";")
         
+    @staticmethod
+    def to_cmake_path(path):
+        return path.replace("\\", "/")
+
     _re_vs_macro = re.compile(r"\$ \( ( [^)]* ) \)", re.VERBOSE)
     def expand_macros(self, text):
         return re.sub(
@@ -144,9 +164,16 @@ class Program:
             lambda m: self.expand_macro(m[1]),
             text
         )
-        
+
     def expand_macro(self, macro):
-        return f"$({macro})" #no-op for now, will be fallback anyway
+        expansion = self.get_macro_expansion(macro)
+        if expansion is not None:
+            return expansion
+        else:
+            return f"$({macro})" # fall back to no-op
+
+    def get_macro_expansion(self, macro):
+        return self.current_target.get_macro_expansion(macro)
 
 
 def create_argument_parser(prog=None):
