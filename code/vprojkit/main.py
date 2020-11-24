@@ -44,8 +44,11 @@ class Program:
     One run of the processing program.
     """
 
-    def __init__(self, inputs):
+    def __init__(self, inputs, expand_macros=None):
+        if expand_macros is None:
+            expand_macros = True
         self.inputs = inputs
+        self.expand_macros_on = expand_macros
         self.node_conditions = {
             None,
             "'$(Configuration)|$(Platform)'=='Release|x64'"
@@ -54,7 +57,10 @@ class Program:
 
     @classmethod
     def from_options(cls, options):
-        return Program(inputs=options.input)
+        return Program(
+            inputs=options.input,
+            expand_macros=options.expand_macros
+        )
 
     def run(self):
         inputs = self.gather_input_files()
@@ -166,11 +172,11 @@ class Program:
         )
 
     def expand_macro(self, macro):
-        expansion = self.get_macro_expansion(macro)
-        if expansion is not None:
-            return expansion
-        else:
-            return f"$({macro})" # fall back to no-op
+        if self.expand_macros_on:
+            expansion = self.get_macro_expansion(macro)
+            if expansion is not None:
+                return expansion
+        return f"$({macro})" # fall back to no-op
 
     def get_macro_expansion(self, macro):
         return self.current_target.get_macro_expansion(macro)
@@ -191,6 +197,21 @@ def create_argument_parser(prog=None):
         "input",
         help=".sln or .vcxproj file(s) to process",
         nargs="*",
+    )
+    macros = parser.add_mutually_exclusive_group()
+    macros.add_argument(
+        "-m", "--expand-macros",
+        help="Expand VS macros in properties.",
+        action="store_true",
+        default=True,
+        dest="expand_macros",
+    )
+    macros.add_argument(
+        "-M", "--no-expand-macros",
+        help="Do not expand VS macros in properties.",
+        action="store_false",
+        default=True,
+        dest="expand_macros",
     )
     return parser
 
