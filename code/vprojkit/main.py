@@ -33,6 +33,7 @@ class Target:
         self.compile_definitions = []
         self.link_libraries = []
         self.link_directories = []
+        self.sources = []
 
         mpath = lambda p: p+"\\" if p else p
         self.vs_macros = {
@@ -132,12 +133,13 @@ class Program:
         out = sys.stdout
         for target in self.targets:
             if target.type == TargetType.EXECUTABLE:
-                out.write(f"\nadd_executable({target.name}")
+                out.write(f"\nadd_executable({target.name}\n  ")
             elif target.type == TargetType.SHARED_LIBRARY:
-                out.write(f"add_library({target.name} SHARED")
+                out.write(f"add_library({target.name} SHARED\n  ")
             elif target.type == TargetType.STATIC_LIBRARY:
-                out.write(f"add_library({target.name} STATIC")
-            out.write(")\n")
+                out.write(f"add_library({target.name} STATIC\n  ")
+            out.write("\n  ".join(map(self.to_cmake_path, target.sources)))
+            out.write("\n)\n")
             if target.include_directories:
                 out.write(f"target_include_directories({target.name} PRIVATE\n  ")
                 out.write("\n  ".join(map(self.to_cmake_path, target.include_directories)))
