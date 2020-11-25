@@ -31,6 +31,8 @@ class Target:
         self.type = None
         self.include_directories = []
         self.compile_definitions = []
+        self.link_libraries = []
+        self.link_directories = []
 
         mpath = lambda p: p+"\\" if p else p
         self.vs_macros = {
@@ -65,6 +67,7 @@ class Program:
             "'$(Configuration)|$(Platform)'=='Release|x64'"
         }
         self.targets = []
+        self.current_ns = ""
         self.cl_expectations = [
             Expectation("Optimization", "MaxSpeed"),
             Expectation("RuntimeLibrary", "MultiThreadedDLL"),
@@ -143,14 +146,21 @@ class Program:
                 out.write(f"target_compile_definitions({target.name} PRIVATE\n  ")
                 out.write("\n  ".join(target.compile_definitions))
                 out.write("\n)\n")
+            if target.link_directories:
+                out.write(f"target_link_directories({target.name} PRIVATE\n  ")
+                out.write("\n  ".join(map(self.to_cmake_path, target.link_directories)))
+                out.write("\n)\n")
+            if target.link_libraries:
+                out.write(f"target_link_libraries({target.name} PRIVATE\n  ")
+                out.write("\n  ".join(target.link_libraries))
+                out.write("\n)\n")
             for ex in target.unexpected:
                 out.write(f"# {target.name}: expected <{ex[0].tag}> of '{ex[0].text}' was actually '{ex[1]}'\n")
 
 
-    _re_project_xmlns = re.compile(r"(\{[^}]*\})Project")
     def process_project(self, root, path_info):
-        self.start_new_target(path_info)
-        ns = self._re_project_xmlns.match(root.tag)[1]
+        self.start_new_target(root, path_info)
+        ns = self.current_ns
         for node in (child for child in root if self.node_applies(child)):
             if node.tag == f"{ns}PropertyGroup":
                 label = node.get("Label")
@@ -159,25 +169,37 @@ class Program:
                 elif label == "Configuration":
                     self.current_target.type = self.target_type_from_xml(node.find(f"{ns}ConfigurationType").text)
             elif node.tag == f"{ns}ItemDefinitionGroup":
-                cl = node.find(f"{ns}ClCompile")
-                self.current_target.include_directories = self.process_list(
-                    cl.find(f"{ns}AdditionalIncludeDirectories")
-                )
-                self.current_target.compile_definitions = self.process_list(
-                    cl.find(f"{ns}PreprocessorDefinitions")
-                )
-                self.check_expectations(cl, self.cl_expectations, ns)
+                self.process_node_cl(node.find(f"{ns}ClCompile"))
                 if self.current_target.type != TargetType.STATIC_LIBRARY:
-                    link = node.find(f"{ns}Link")
-                    # ...
-                    self.check_expectations(link, self.link_expectations, ns)
-
+                    self.process_node_link(node.find(f"{ns}Link"))
+                    
+    def process_node_cl(self, cl):
+        ns = self.current_ns
+        self.current_target.include_directories = self.process_list(
+            cl.find(f"{ns}AdditionalIncludeDirectories")
+        )
+        self.current_target.compile_definitions = self.process_list(
+            cl.find(f"{ns}PreprocessorDefinitions")
+        )
+        self.check_expectations(cl, self.cl_expectations)
+        
+    def process_node_link(self, link):
+        ns = self.current_ns
+        self.current_target.link_libraries = self.process_list(
+            link.find(f"{ns}AdditionalDependencies")
+        )
+        self.current_target.link_directories = self.process_list(
+            link.find(f"{ns}AdditionalLibraryDirectories")
+        )
+        self.check_expectations(link, self.link_expectations)
 
     def node_applies(self, node):
         return node.get("Condition") in self.node_conditions
 
-    def start_new_target(self, path_info):
+    _re_project_xmlns = re.compile(r"(\{[^}]*\})Project")
+    def start_new_target(self, root, path_info):
         self.targets.append(Target(path_info[0], sln_dir=path_info[1]))
+        self.current_ns = self._re_project_xmlns.match(root.tag)[1]
 
     @property
     def current_target(self):
@@ -190,9 +212,9 @@ class Program:
             if not d.startswith("%(")
         ]
 
-    def check_expectations(self, node, expectations, ns):
+    def check_expectations(self, node, expectations):
         for ex in expectations:
-            text = node.find(f"{ns}{ex.tag}").text.strip()
+            text = node.find(f"{self.current_ns}{ex.tag}").text.strip()
             if text != ex.text:
                 self.current_target.add_unexpected(ex, text)
 
