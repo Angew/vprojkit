@@ -229,7 +229,9 @@ class Program:
                 self.current_target.add_unexpected(ex, text)
 
     _target_type_from_xml_mapping = {
-        "DynamicLibrary": TargetType.SHARED_LIBRARY
+        "Application": TargetType.EXECUTABLE,
+        "DynamicLibrary": TargetType.SHARED_LIBRARY,
+        "StaticLibrary": TargetType.STATIC_LIBRARY,
     }
     @classmethod
     def target_type_from_xml(cls, type):
