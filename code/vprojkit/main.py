@@ -51,6 +51,8 @@ class Target:
 
 
 Expectation = namedtuple("Expectation", "tag, text")
+# ToDo: also allow expectations of other forms than literal text
+# matching, and use them to check that no per-source flags are used.
 
 
 class Program:
@@ -174,6 +176,12 @@ class Program:
                 self.process_node_cl(node.find(f"{ns}ClCompile"))
                 if self.current_target.type != TargetType.STATIC_LIBRARY:
                     self.process_node_link(node.find(f"{ns}Link"))
+            elif node.tag == f"{ns}ItemGroup":
+                self.current_target.sources.extend((
+                    self.expand_macros(f.get("Include"))
+                    for f in node.iter()
+                    if f.tag in {f"{ns}ClCompile", f"{ns}ClInclude"}
+                ))
                     
     def process_node_cl(self, cl):
         ns = self.current_ns
